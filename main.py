@@ -1,8 +1,5 @@
 import os
 import sys
-import time
-from ast import literal_eval
-from textwrap import wrap
 
 from smartcard import System
 from smartcard.CardRequest import CardRequest
@@ -10,11 +7,15 @@ from smartcard.CardType import AnyCardType
 from smartcard.Exceptions import CardRequestTimeoutException, CardConnectionException
 from smartcard.util import toHexString
 
-vcard_file = "vcard.vcf"
-
 
 class Main:
     def __init__(self):
+        if len(sys.argv) == 2:
+            vcard_file = sys.argv[1]
+        else:
+            print("Error: Wrong or missing args")
+            exit()
+
         text = "vcard2sim - Save vCard contacts to SIM card"
         print(len(text) * "#")
         print(text)
@@ -103,7 +104,7 @@ class Main:
                     print("Error: No card inserted")
                     exit()
                 except CardConnectionException:
-                    print("Error: Could not communicate with card")
+                    print("\r\nError: Could not communicate with card")
                     exit()
 
             else:
@@ -277,10 +278,8 @@ class Main:
     def write_record(self, record, data):
         return self.card_service.connection.transmit([0xA0, 0xDC, record, 0x04, len(data)] + data)
 
-    def select(self, addr, with_length=True):
-        if with_length:
-            addr = [min(len(addr), 255)] + addr
-
+    def select(self, addr):
+        addr = [min(len(addr), 255)] + addr
         return self.card_service.connection.transmit([0xA0, 0xA4, 0x00, 0x00] + addr)
 
     @staticmethod
