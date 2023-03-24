@@ -135,8 +135,11 @@ class Main:
             name_str = ""
             name = contact[:name_length]
             bcd = contact[name_length:name_length + 1]
+            ton = contact[name_length + 1:name_length + 2]
             number = contact[name_length + 2:name_length + 1 + int(bcd[0])]
             number = self.hex_to_string(number)
+            if ton[0] == 0x91:
+                number = "+" + number
             for bit in name:
                 if bit != 0xff:
                     name_str += bytes.fromhex(str(hex(bit)).replace("0x", "")).decode('utf-8')
