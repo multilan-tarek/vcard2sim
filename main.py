@@ -59,21 +59,6 @@ class Main:
         else:
             print("Error: Selection not in list")
 
-    def select(self, addr, with_length=True):
-        if with_length:
-            addr = [min(len(addr), 255)] + addr
-
-        return self.card_service.connection.transmit([0xA0, 0xA4, 0x00, 0x00] + addr)
-
-    def get(self, le):
-        return self.card_service.connection.transmit([0xA0, 0xC0, 0x00, 0x00, le])
-
-    def read_binary(self, le):
-        return self.card_service.connection.transmit([0xA0, 0xB0, 0x00, 0x00, le])
-
-    def read_record(self, record, le):
-        return self.card_service.connection.transmit([0xA0, 0xB2, 0x00, 0x01, le])
-
     def get_iccid(self):
         return self.get_file([0x3F, 0x00], [0x2F, 0xE2])
 
@@ -92,20 +77,36 @@ class Main:
             file, sw1, sw2 = self.select(file)
             if sw1 == 0x9F:
                 file_desc, sw1, sw2 = self.get(sw2)
-                size = file_desc[3]
                 if sw1 == 0x90:
-
+                    size = file_desc[2] * 0x100 + file_desc[3]
                     if record_mode:
-                        records, sw1, sw2 = self.read_record(0x01, size)
-                        print(records, toHexString([sw1, sw2]))
+                        record_length = file_desc[14]
+                        records = []
+                        for i in range(size // record_length):
+                            record, sw1, sw2 = self.read_record(size, record_length, i+1)
+                            if sw1 == 0x90:
+                                records.append(record)
+                        return records
 
                     else:
-
                         content, sw1, sw2 = self.read_binary(size)
                         if sw1 == 0x90:
                             return content
 
+    def get(self, le):
+        return self.card_service.connection.transmit([0xA0, 0xC0, 0x00, 0x00, le])
 
+    def read_binary(self, le):
+        return self.card_service.connection.transmit([0xA0, 0xB0, 0x00, 0x00, le])
+
+    def read_record(self, le, record_le, record):
+        return self.card_service.connection.transmit([0xA0, 0xB2, record, 0x04, record_le])
+
+    def select(self, addr, with_length=True):
+        if with_length:
+            addr = [min(len(addr), 255)] + addr
+
+        return self.card_service.connection.transmit([0xA0, 0xA4, 0x00, 0x00] + addr)
 
     @staticmethod
     def to_hex(decimal):
