@@ -1,4 +1,5 @@
 import codecs
+import sys
 
 from smartcard import System
 from smartcard.CardRequest import CardRequest
@@ -45,12 +46,20 @@ class Main:
                         print("Provider:", self.get_spn())
                         print("Loading contacts...")
 
-                        contacts, max_contacts = self.get_contacts()
+                        contacts, max_contacts, contact_length = self.get_contacts()
                         print(f"Used {len(contacts)} of {max_contacts} entries")
                         for contact in contacts:
-                            print(f"({contact['slot']}/{max_contacts}) {contact['name']}")
+                            print(f"({contact['slot']}/{max_contacts}) {contact['name']} - {contact['number']}")
 
-                        print(self.get_contacts())
+                        export_contacts = input("Do you want to export the existing contact list? (y/N) ")
+                        if export_contacts.lower() == "y":
+                            pass
+
+                        clear_contacts = input("Do you want to clear the contact list? (y/N) ")
+                        if clear_contacts.lower() == "y":
+                            self.clear_contacts()
+                        else:
+                            print("New contacts will be appended to the list")
 
                     else:
                         print("Error: Card is not a SIM card")
@@ -68,13 +77,15 @@ class Main:
             print("Error: Selection not in list")
 
     def get_iccid(self):
-        return self.get_file([0x3F, 0x00], [0x2F, 0xE2])
+        iccid = self.get_file([0x3F, 0x00], [0x2F, 0xE2])
+        return self.hex_to_string(iccid)
 
     def get_spn(self):
         return bytearray.fromhex(toHexString(self.get_file([0x7F, 0x20], [0x6F, 0x46])[1:])).decode()
 
     def get_imsi(self):
-        return self.get_file([0x7F, 0x20], [0x6F, 0x07])
+        imsi = self.get_file([0x7F, 0x20], [0x6F, 0x07])
+        return self.hex_to_string(imsi)[3:]
 
     def get_contacts(self):
         filtered_contacts = []
@@ -82,15 +93,37 @@ class Main:
         max_contacts = size // record_length
 
         for contact in contacts:
+            name_length = record_length - 14
             name_str = ""
-            name = contact[:record_length - 14]
+            name = contact[:name_length]
+            bcd = contact[name_length:name_length + 1]
+            ton_npi = contact[name_length + 1:name_length + 2]
+            number = contact[name_length + 2:name_length + 1 + int(bcd[0])]
+            number = self.hex_to_string(number)
             for bit in name:
                 if bit != 0xff:
                     name_str += bytes.fromhex(str(hex(bit)).replace("0x", "")).decode('utf-8')
             if name_str != "":
-                filtered_contacts.append({"slot": contacts.index(contact) + 1, "name": name_str})
+                filtered_contacts.append({"slot": contacts.index(contact) + 1, "name": name_str, "number": number})
 
-        return filtered_contacts, max_contacts
+        return filtered_contacts, max_contacts, record_length
+
+    def clear_contacts(self):
+        contacts, size, record_length = self.get_file([0x7F, 0x10], [0x6F, 0x3A], record_mode=True)
+
+        empty_data = []
+        for i in range(record_length):
+            empty_data.append(0xFF)
+
+        for contact in range(len(contacts)):
+            _, sw1, sw2 = self.write_record(contact + 1, empty_data)
+            if sw1 != 0x90:
+                print("Error: An error occurred while clearing contact list")
+                exit()
+
+            progress = round(((contact + 1) / len(contacts)) * 100, 1)
+            sys.stdout.write(f"\rClearing list: {progress}%")
+            sys.stdout.flush()
 
     def get_file(self, folder, file, record_mode=False):
         df_gsm, sw1, sw2 = self.select(folder)
@@ -104,7 +137,7 @@ class Main:
                         record_length = file_desc[14]
                         records = []
                         for i in range(size // record_length):
-                            record, sw1, sw2 = self.read_record(size, record_length, i + 1)
+                            record, sw1, sw2 = self.read_record(record_length, i + 1)
                             if sw1 == 0x90:
                                 records.append(record)
                         return records, size, record_length
@@ -120,14 +153,32 @@ class Main:
     def read_binary(self, le):
         return self.card_service.connection.transmit([0xA0, 0xB0, 0x00, 0x00, le])
 
-    def read_record(self, le, record_le, record):
+    def read_record(self, record_le, record):
         return self.card_service.connection.transmit([0xA0, 0xB2, record, 0x04, record_le])
+
+    def write_record(self, record, data):
+        return self.card_service.connection.transmit([0xA0, 0xDC, record, 0x04, len(data)] + data)
 
     def select(self, addr, with_length=True):
         if with_length:
             addr = [min(len(addr), 255)] + addr
 
         return self.card_service.connection.transmit([0xA0, 0xA4, 0x00, 0x00] + addr)
+
+    @staticmethod
+    def hex_to_string(hex_list, reverse=True):
+        result_string = ""
+        for hex_val in hex_list:
+            hex_string = str(hex(hex_val)).replace("0x", "")
+            if len(hex_string) == 1:
+                hex_string = f"0{hex_string}"
+
+            if reverse:
+                result_string += hex_string[1] + hex_string[0]
+            else:
+                result_string += hex_string
+
+        return result_string.replace("f", "")
 
     @staticmethod
     def to_hex(decimal):
