@@ -1,3 +1,5 @@
+import codecs
+
 from smartcard import System
 from smartcard.CardRequest import CardRequest
 from smartcard.CardType import AnyCardType
@@ -69,7 +71,19 @@ class Main:
         return self.get_file([0x7F, 0x20], [0x6F, 0x07])
 
     def get_contacts(self):
-        return self.get_file([0x7F, 0x10], [0x6F, 0x3A], record_mode=True)
+        contacts, size, record_length = self.get_file([0x7F, 0x10], [0x6F, 0x3A], record_mode=True)
+        record_count = size // record_length
+        for contact in contacts:
+            name_str = ""
+            name = contact[:record_length - 14]
+            for bit in name:
+                if bit != 0xff:
+                    name_str += bytes.fromhex(str(hex(bit)).replace("0x", "")).decode('utf-8')
+
+            if name_str != "":
+                print(f"({contacts.index(contact) + 1}/{record_count}) {name_str}")
+
+        return ""
 
     def get_file(self, folder, file, record_mode=False):
         df_gsm, sw1, sw2 = self.select(folder)
@@ -83,10 +97,10 @@ class Main:
                         record_length = file_desc[14]
                         records = []
                         for i in range(size // record_length):
-                            record, sw1, sw2 = self.read_record(size, record_length, i+1)
+                            record, sw1, sw2 = self.read_record(size, record_length, i + 1)
                             if sw1 == 0x90:
                                 records.append(record)
-                        return records
+                        return records, size, record_length
 
                     else:
                         content, sw1, sw2 = self.read_binary(size)
