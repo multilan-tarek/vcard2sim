@@ -44,6 +44,12 @@ class Main:
                         print("IMSI:", self.get_imsi())
                         print("Provider:", self.get_spn())
                         print("Loading contacts...")
+
+                        contacts, max_contacts = self.get_contacts()
+                        print(f"Used {len(contacts)} of {max_contacts} entries")
+                        for contact in contacts:
+                            print(f"({contact['slot']}/{max_contacts}) {contact['name']}")
+
                         print(self.get_contacts())
 
                     else:
@@ -71,19 +77,20 @@ class Main:
         return self.get_file([0x7F, 0x20], [0x6F, 0x07])
 
     def get_contacts(self):
+        filtered_contacts = []
         contacts, size, record_length = self.get_file([0x7F, 0x10], [0x6F, 0x3A], record_mode=True)
-        record_count = size // record_length
+        max_contacts = size // record_length
+
         for contact in contacts:
             name_str = ""
             name = contact[:record_length - 14]
             for bit in name:
                 if bit != 0xff:
                     name_str += bytes.fromhex(str(hex(bit)).replace("0x", "")).decode('utf-8')
-
             if name_str != "":
-                print(f"({contacts.index(contact) + 1}/{record_count}) {name_str}")
+                filtered_contacts.append({"slot": contacts.index(contact) + 1, "name": name_str})
 
-        return ""
+        return filtered_contacts, max_contacts
 
     def get_file(self, folder, file, record_mode=False):
         df_gsm, sw1, sw2 = self.select(folder)
