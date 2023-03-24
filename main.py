@@ -87,7 +87,7 @@ class Main:
                             progress = round((vcard_contacts.index(contact) / len(vcard_contacts)) * 100, 1)
                             sys.stdout.flush()
                             sys.stdout.write(f"\rImporting {contact['name']}... {progress}%")
-                            self.add_contacts(contact["name"], contact["number"], record_length,
+                            self.add_contact(contact["name"], contact["number"], record_length,
                                               vcard_contacts.index(contact) + 1 + start_entry)
 
                         sys.stdout.flush()
@@ -168,7 +168,7 @@ class Main:
         sys.stdout.flush()
         sys.stdout.write("\rContact list successfully cleared\r\n")
 
-    def add_contacts(self, name, number, length, slot):
+    def add_contact(self, name, number, length, slot):
         data = []
 
         max_name_length = length - 14
