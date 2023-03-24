@@ -1,11 +1,16 @@
-import codecs
+import os
 import sys
+import time
+from ast import literal_eval
+from textwrap import wrap
 
 from smartcard import System
 from smartcard.CardRequest import CardRequest
 from smartcard.CardType import AnyCardType
 from smartcard.Exceptions import CardRequestTimeoutException, CardConnectionException
 from smartcard.util import toHexString
+
+vcard_file = "vcard.vcf"
 
 
 class Main:
@@ -44,22 +49,52 @@ class Main:
                         print("ICCID:", self.get_iccid())
                         print("IMSI:", self.get_imsi())
                         print("Provider:", self.get_spn())
-                        print("Loading contacts...")
+                        print("Reading contacts from card...")
 
                         contacts, max_contacts, contact_length = self.get_contacts()
-                        print(f"Used {len(contacts)} of {max_contacts} entries")
-                        for contact in contacts:
-                            print(f"({contact['slot']}/{max_contacts}) {contact['name']} - {contact['number']}")
+                        self.print_contacts(contacts, max_contacts)
 
-                        export_contacts = input("Do you want to export the existing contact list? (y/N) ")
-                        if export_contacts.lower() == "y":
-                            pass
+                        append_mode = False
+                        cleared = False
+                        if len(contacts) != 0:
+                            append_mode = True
+                            export_contacts = input("Do you want to export the existing contact list? (y/N) ")
+                            if export_contacts.lower() == "y":
+                                export_fn = input("Enter a file name: ")
+                                self.export_contacts(export_fn)
 
-                        clear_contacts = input("Do you want to clear the contact list? (y/N) ")
-                        if clear_contacts.lower() == "y":
-                            self.clear_contacts()
-                        else:
-                            print("New contacts will be appended to the list")
+                            clear_contacts = input("Do you want to clear the contact list? (y/N) ")
+                            if clear_contacts.lower() == "y":
+                                self.clear_contacts()
+                                cleared = True
+                                append_mode = False
+
+                        print(f"Starting import of vcard file '{vcard_file}'")
+                        start_entry = 0
+                        if append_mode:
+                            start_entry = len(contacts)
+                            print(f"New contacts will be appended to the list after entry {len(contacts)}")
+
+                        _, _, record_length = self.get_file([0x7F, 0x10], [0x6F, 0x3A], record_mode=True)
+                        vcard_contacts = self.read_vcard(vcard_file)
+
+                        if len(vcard_contacts) + len(contacts) > max_contacts and not cleared:
+                            print("Error: Appending VCard contacts would exceed SIM card space")
+                            exit()
+
+                        for contact in vcard_contacts:
+                            progress = round((vcard_contacts.index(contact) / len(vcard_contacts)) * 100, 1)
+                            sys.stdout.flush()
+                            sys.stdout.write(f"\rImporting {contact['name']}... {progress}%")
+                            self.add_contacts(contact["name"], contact["number"], record_length,
+                                              vcard_contacts.index(contact) + 1 + start_entry)
+
+                        sys.stdout.flush()
+                        sys.stdout.write(f"\rVCard contact list successfully imported from {vcard_file}\r\n")
+
+                        print("Reading contact list from card...")
+                        contacts, max_contacts, contact_length = self.get_contacts()
+                        self.print_contacts(contacts, max_contacts)
 
                     else:
                         print("Error: Card is not a SIM card")
@@ -92,19 +127,20 @@ class Main:
         contacts, size, record_length = self.get_file([0x7F, 0x10], [0x6F, 0x3A], record_mode=True)
         max_contacts = size // record_length
 
+        slot = 0
         for contact in contacts:
+            slot += 1
             name_length = record_length - 14
             name_str = ""
             name = contact[:name_length]
             bcd = contact[name_length:name_length + 1]
-            ton_npi = contact[name_length + 1:name_length + 2]
             number = contact[name_length + 2:name_length + 1 + int(bcd[0])]
             number = self.hex_to_string(number)
             for bit in name:
                 if bit != 0xff:
                     name_str += bytes.fromhex(str(hex(bit)).replace("0x", "")).decode('utf-8')
             if name_str != "":
-                filtered_contacts.append({"slot": contacts.index(contact) + 1, "name": name_str, "number": number})
+                filtered_contacts.append({"slot": slot, "name": name_str, "number": number})
 
         return filtered_contacts, max_contacts, record_length
 
@@ -124,6 +160,85 @@ class Main:
             progress = round(((contact + 1) / len(contacts)) * 100, 1)
             sys.stdout.write(f"\rClearing list: {progress}%")
             sys.stdout.flush()
+
+        sys.stdout.flush()
+        sys.stdout.write("\rContact list successfully cleared\r\n")
+
+    def add_contacts(self, name, number, length, slot):
+        data = []
+
+        max_name_length = length - 14
+        name = name.encode("utf-8").hex()
+        name_chunks = [name[i:i + 2] for i in range(0, len(name), 2)]
+        name_data = []
+
+        for chunk in name_chunks:
+            if len(name_data) <= max_name_length:
+                chunk = int(f"0x{chunk}", 16)
+                name_data.append(chunk)
+
+        data = data + name_data
+
+        for i in range(max_name_length - len(name_data)):
+            data.append(0xFF)
+
+        starts_with_plus = False
+        number = number.replace("*", "A1").replace("#", "B2")
+        if number.startswith("+"):
+            number = number.strip("+")
+            starts_with_plus = True
+        number = number.replace(" ", "")
+
+        number_chunks = [number[i:i + 2] for i in range(0, len(number), 2)]
+        number_data = []
+
+        for chunk in number_chunks:
+            if len(chunk) == 2:
+                chunk = chunk[1] + chunk[0]
+            else:
+                chunk = "F" + chunk
+
+            chunk = int(f"0x{chunk}", 16)
+            number_data.append(chunk)
+
+        data.append(len(number_data) + 1)
+        if starts_with_plus:
+            data.append(0x91)
+        else:
+            data.append(0x81)
+        data = data + number_data
+
+        for i in range(length - len(data)):
+            data.append(0xFF)
+
+        _, sw1, sw2 = self.write_record(slot, data)
+        if sw1 != 0x90:
+            print("Error: An error occurred while communicating with card")
+            exit()
+
+    @staticmethod
+    def print_contacts(contacts, max_contacts):
+        print(f"Used {len(contacts)} of {max_contacts} entries")
+        for contact in contacts:
+            print(f"({contact['slot']}/{max_contacts}) {contact['name']} - {contact['number']}")
+
+    def export_contacts(self, filename):
+        start_export = True
+        if not filename.endswith(".vcf"):
+            filename += ".vcf"
+
+        if os.path.exists(filename):
+            replace = input(f"File already exists. Do you want to replace '{filename}'? (y/N) ")
+            if replace.lower() != "y":
+                start_export = False
+                print("Export aborted")
+
+        if start_export:
+            sys.stdout.write(f"\rExporting list to {filename}...")
+            contacts, _, _ = self.get_contacts()
+            self.write_vcard(contacts, filename)
+            sys.stdout.flush()
+            sys.stdout.write(f"\rContact list successfully exported to {filename}\r\n")
 
     def get_file(self, folder, file, record_mode=False):
         df_gsm, sw1, sw2 = self.select(folder)
@@ -146,6 +261,9 @@ class Main:
                         content, sw1, sw2 = self.read_binary(size)
                         if sw1 == 0x90:
                             return content
+                else:
+                    print("Error: An error occurred while communicating with card")
+                    exit()
 
     def get(self, le):
         return self.card_service.connection.transmit([0xA0, 0xC0, 0x00, 0x00, le])
@@ -181,10 +299,45 @@ class Main:
         return result_string.replace("f", "")
 
     @staticmethod
-    def to_hex(decimal):
-        print(decimal)
-        new_hex = hex(decimal)[2:-1]
-        print(new_hex)
+    def write_vcard(data, filename):
+        new_vcard = ""
+        for item in data:
+            new_vcard += "BEGIN:VCARD\rVERSION:4.0\r"
+            new_vcard += f"FN:{item['name']}\r"
+            new_vcard += f"TEL;TYPE=cell:{item['number']}\r"
+            new_vcard += "END:VCARD\r"
+
+        with open(filename, "w") as file:
+            file.write(new_vcard)
+
+    @staticmethod
+    def read_vcard(filename):
+        contacts = []
+        with open(filename, "r") as file:
+            vcard = file.read()
+
+        name = None
+        number = None
+        for line in vcard.splitlines():
+            if line == "BEGIN:VCARD":
+                name = None
+                number = None
+
+            elif line == "END:VCARD":
+                if name and number:
+                    contacts.append({"number": number, "name": name})
+                elif name and not number:
+                    print(f"'{name} is missing a number'")
+                else:
+                    print("Error: VCard file has missing information or is corrupt")
+
+            elif "TEL;" in line:
+                number = line.rsplit(":", 1)[1]
+
+            elif "FN:" in line:
+                name = line.rsplit(":", 1)[1]
+
+        return contacts
 
 
 Main()
