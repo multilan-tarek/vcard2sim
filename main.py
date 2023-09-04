@@ -8,14 +8,16 @@ from smartcard.Exceptions import CardRequestTimeoutException, CardConnectionExce
 from smartcard.util import toHexString
 
 
+class CardBlocked(Exception):
+    pass
+
+
+class CardPinLocked(Exception):
+    pass
+
+
 class Main:
     def __init__(self):
-        if len(sys.argv) == 2:
-            vcard_file = sys.argv[1]
-        else:
-            print("Error: Wrong or missing args")
-            exit()
-
         text = "vcard2sim - Save vCard contacts to SIM card"
         print(len(text) * "#")
         print(text)
@@ -45,13 +47,23 @@ class Main:
 
                     df_gsm, sw1, sw2 = self.select([0x7F, 0x20])
 
+                    try:
+                        self.get_imsi()
+                    except CardPinLocked:
+                        if not self.unlock_sim():
+                            exit()
+                    except CardBlocked:
+                        print("Error: SIM card blocked")
+                        exit()
+
                     if sw1 == 0x9F:
                         print("Detected card:")
                         print("ICCID:", self.get_iccid())
                         print("IMSI:", self.get_imsi())
                         print("Provider:", self.get_spn())
-                        print("Reading contacts from card...")
+                        print(len(text) * "#")
 
+                        print("Reading contacts from card...")
                         contacts, max_contacts, contact_length = self.get_contacts()
                         self.print_contacts(contacts, max_contacts)
 
@@ -70,33 +82,42 @@ class Main:
                                 cleared = True
                                 append_mode = False
 
-                        print(f"Starting import of vcard file '{vcard_file}'")
-                        start_entry = 0
                         if append_mode:
-                            start_entry = len(contacts)
-                            print(f"New contacts will be appended to the list after entry {len(contacts)}")
+                            continue_append = input("Contacts will be appended to existing contact list on card, "
+                                                    "continue? (y/N) ")
+                            if continue_append.lower() != "y":
+                                exit()
 
-                        _, _, record_length = self.get_file([0x7F, 0x10], [0x6F, 0x3A], record_mode=True)
-                        vcard_contacts = self.read_vcard(vcard_file)
+                        vcard_file = input("Enter import vCard (.vcf) filename: ")
+                        if os.path.exists(vcard_file):
+                            print(f"Starting import of vCard file '{vcard_file}'")
+                            start_entry = 0
+                            if append_mode:
+                                start_entry = len(contacts)
+                                print(f"New contacts will be appended to the list after entry {len(contacts)}")
 
-                        if len(vcard_contacts) + len(contacts) > max_contacts and not cleared:
-                            print("Error: Appending VCard contacts would exceed SIM card space")
-                            exit()
+                            _, _, record_length = self.get_file([0x7F, 0x10], [0x6F, 0x3A], record_mode=True)
+                            vcard_contacts = self.read_vcard(vcard_file)
 
-                        for contact in vcard_contacts:
-                            progress = round((vcard_contacts.index(contact) / len(vcard_contacts)) * 100, 1)
+                            if len(vcard_contacts) + len(contacts) > max_contacts and not cleared:
+                                print("Error: Appending vCard contacts would exceed SIM card space")
+                                exit()
+
+                            for contact in vcard_contacts:
+                                progress = round((vcard_contacts.index(contact) / len(vcard_contacts)) * 100, 1)
+                                sys.stdout.flush()
+                                sys.stdout.write(f"\rImporting {contact['name']}... {progress}%")
+                                self.add_contact(contact["name"], contact["number"], record_length,
+                                                 vcard_contacts.index(contact) + 1 + start_entry)
+
                             sys.stdout.flush()
-                            sys.stdout.write(f"\rImporting {contact['name']}... {progress}%")
-                            self.add_contact(contact["name"], contact["number"], record_length,
-                                              vcard_contacts.index(contact) + 1 + start_entry)
+                            sys.stdout.write(f"\rvCard contact list successfully imported from {vcard_file}\r\n")
 
-                        sys.stdout.flush()
-                        sys.stdout.write(f"\rVCard contact list successfully imported from {vcard_file}\r\n")
-
-                        print("Reading contact list from card...")
-                        contacts, max_contacts, contact_length = self.get_contacts()
-                        self.print_contacts(contacts, max_contacts)
-
+                            print("Reading contact list from card...")
+                            contacts, max_contacts, contact_length = self.get_contacts()
+                            self.print_contacts(contacts, max_contacts)
+                        else:
+                            print("Error: File not found")
                     else:
                         print("Error: Card is not a SIM card")
 
@@ -110,7 +131,29 @@ class Main:
             else:
                 print("Error: Selection not in list")
         else:
-            print("Error: Selection not in list")
+            print("Error: Selection must be numeric")
+
+    def unlock_sim(self):
+        pin = input("SIM card is PIN locked! Enter SIM PIN1: ")
+        if pin.isnumeric():
+            if len(pin) == 4:
+                cmd = [0xA0, 0x20, 0x00, 0x01, 0x08]
+                for c in pin:
+                    cmd.append(int(c) | 0x30)
+                cmd += [0xff, 0xff, 0xff, 0xff]
+
+                value, sw1, sw2 = self.card_service.connection.transmit(cmd)
+                if sw1 == 0x90:
+                    return True
+                elif sw1 == 0x98 and sw2 == 0x04:
+                    print("Error: SIM PIN invalid")
+                elif sw1 == 0x98 and sw2 == 0x40:
+                    print("Error: SIM PIN blocked, SIM needs to be unblocked using PUK first")
+            else:
+                print("Error: SIM PIN must be a 4 digit number")
+        else:
+            print("Error: SIM PIN must be numeric")
+        return False
 
     def get_iccid(self):
         iccid = self.get_file([0x3F, 0x00], [0x2F, 0xE2])
@@ -270,20 +313,37 @@ class Main:
                     exit()
 
     def get(self, le):
-        return self.card_service.connection.transmit([0xA0, 0xC0, 0x00, 0x00, le])
+        value, sw1, sw2 = self.card_service.connection.transmit([0xA0, 0xC0, 0x00, 0x00, le])
+        self.check_card_access(sw1, sw2)
+        return value, sw1, sw2
 
     def read_binary(self, le):
-        return self.card_service.connection.transmit([0xA0, 0xB0, 0x00, 0x00, le])
+        value, sw1, sw2 = self.card_service.connection.transmit([0xA0, 0xB0, 0x00, 0x00, le])
+        self.check_card_access(sw1, sw2)
+        return value, sw1, sw2
 
     def read_record(self, record_le, record):
-        return self.card_service.connection.transmit([0xA0, 0xB2, record, 0x04, record_le])
+        value, sw1, sw2 = self.card_service.connection.transmit([0xA0, 0xB2, record, 0x04, record_le])
+        self.check_card_access(sw1, sw2)
+        return value, sw1, sw2
 
     def write_record(self, record, data):
-        return self.card_service.connection.transmit([0xA0, 0xDC, record, 0x04, len(data)] + data)
+        value, sw1, sw2 = self.card_service.connection.transmit([0xA0, 0xDC, record, 0x04, len(data)] + data)
+        self.check_card_access(sw1, sw2)
+        return value, sw1, sw2
 
     def select(self, addr):
         addr = [min(len(addr), 255)] + addr
-        return self.card_service.connection.transmit([0xA0, 0xA4, 0x00, 0x00] + addr)
+        value, sw1, sw2 = self.card_service.connection.transmit([0xA0, 0xA4, 0x00, 0x00] + addr)
+        self.check_card_access(sw1, sw2)
+        return value, sw1, sw2
+
+    @staticmethod
+    def check_card_access(sw1, sw2):
+        if sw1 == 0x98 and sw2 == 0x04:
+            raise CardPinLocked
+        elif sw2 == 0x98:
+            raise CardBlocked
 
     @staticmethod
     def hex_to_string(hex_list, reverse=True):
@@ -331,7 +391,7 @@ class Main:
                 elif name and not number:
                     print(f"'{name} is missing a number'")
                 else:
-                    print("Error: VCard file has missing information or is corrupt")
+                    print("Error: vCard file has missing information or is corrupt")
 
             elif "TEL;" in line:
                 number = line.rsplit(":", 1)[1]
