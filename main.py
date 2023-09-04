@@ -8,6 +8,11 @@ from smartcard.Exceptions import CardRequestTimeoutException, CardConnectionExce
 from smartcard.util import toHexString
 
 
+def exit_now():
+    input("Press enter to exit...")
+    exit()
+
+
 class CardBlocked(Exception):
     pass
 
@@ -51,10 +56,10 @@ class Main:
                         self.get_imsi()
                     except CardPinLocked:
                         if not self.unlock_sim():
-                            exit()
+                            exit_now()
                     except CardBlocked:
                         print("Error: SIM card blocked")
-                        exit()
+                        exit_now()
 
                     if sw1 == 0x9F:
                         print("Detected card:")
@@ -86,7 +91,7 @@ class Main:
                             continue_append = input("Contacts will be appended to existing contact list on card, "
                                                     "continue? (y/N) ")
                             if continue_append.lower() != "y":
-                                exit()
+                                exit_now()
 
                         vcard_file = input("Enter import vCard (.vcf) filename: ")
                         if os.path.exists(vcard_file):
@@ -101,7 +106,7 @@ class Main:
 
                             if len(vcard_contacts) + len(contacts) > max_contacts and not cleared:
                                 print("Error: Appending vCard contacts would exceed SIM card space")
-                                exit()
+                                exit_now()
 
                             for contact in vcard_contacts:
                                 progress = round((vcard_contacts.index(contact) / len(vcard_contacts)) * 100, 1)
@@ -123,10 +128,10 @@ class Main:
 
                 except CardRequestTimeoutException:
                     print("Error: No card inserted")
-                    exit()
+                    exit_now()
                 except CardConnectionException:
                     print("\r\nError: Could not communicate with card")
-                    exit()
+                    exit_now()
 
             else:
                 print("Error: Selection not in list")
@@ -202,7 +207,7 @@ class Main:
             _, sw1, sw2 = self.write_record(contact + 1, empty_data)
             if sw1 != 0x90:
                 print("Error: An error occurred while clearing contact list")
-                exit()
+                exit_now()
 
             progress = round(((contact + 1) / len(contacts)) * 100, 1)
             sys.stdout.write(f"\rClearing list: {progress}%")
@@ -261,7 +266,7 @@ class Main:
         _, sw1, sw2 = self.write_record(slot, data)
         if sw1 != 0x90:
             print("Error: An error occurred while communicating with card")
-            exit()
+            exit_now()
 
     @staticmethod
     def print_contacts(contacts, max_contacts):
@@ -310,7 +315,7 @@ class Main:
                             return content
                 else:
                     print("Error: An error occurred while communicating with card")
-                    exit()
+                    exit_now()
 
     def get(self, le):
         value, sw1, sw2 = self.card_service.connection.transmit([0xA0, 0xC0, 0x00, 0x00, le])
@@ -403,4 +408,4 @@ class Main:
 
 
 Main()
-input("Press enter to exit...")
+exit_now()
