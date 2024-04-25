@@ -165,7 +165,7 @@ class Main:
         return self.hex_to_string(iccid)
 
     def get_spn(self):
-        return bytearray.fromhex(toHexString(self.get_file([0x7F, 0x20], [0x6F, 0x46])[1:])).decode()
+        return bytearray.fromhex(toHexString(self.get_file([0x7F, 0x20], [0x6F, 0x46])[1:])).decode(errors="ignore")
 
     def get_imsi(self):
         imsi = self.get_file([0x7F, 0x20], [0x6F, 0x07])
@@ -190,7 +190,7 @@ class Main:
                 number = "+" + number
             for bit in name:
                 if bit != 0xff:
-                    name_str += bytes.fromhex(str(hex(bit)).replace("0x", "")).decode('utf-8')
+                    name_str += bytes.fromhex(str(hex(bit)).replace("0x", "")).decode('utf-8', errors="ignore")
             if name_str != "":
                 filtered_contacts.append({"slot": slot, "name": name_str, "number": number})
 
